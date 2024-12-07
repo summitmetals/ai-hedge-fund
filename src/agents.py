@@ -93,12 +93,15 @@ def quant_agent(state: AgentState):
     signals = []
     
     # MACD signal
-    if macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]:
-        signals.append('bullish')
-    elif macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]:
-        signals.append('bearish')
+    if len(macd_line) >= 2 and len(signal_line) >= 2:
+        if macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]:
+            signals.append('bullish')
+        elif macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]:
+            signals.append('bearish')
+        else:
+            signals.append('neutral')
     else:
-        signals.append('neutral')
+        signals.append('neutral')  # Not enough data for MACD calculation
     
     # RSI signal
     if rsi.iloc[-1] < 30:
@@ -194,97 +197,118 @@ def fundamentals_agent(state: AgentState):
     show_reasoning = state["metadata"]["show_reasoning"]
     data = state["data"]
     metrics = data["financial_metrics"][0]  # Get the most recent metrics
+    ticker = data["ticker"]
     
     # Initialize signals list for different fundamental aspects
     signals = []
     reasoning = {}
     
-    # 1. Profitability Analysis
-    profitability_score = 0
-    if metrics["return_on_equity"] > 0.15:  # Strong ROE above 15%
-        profitability_score += 1
-    if metrics["net_margin"] > 0.20:  # Healthy profit margins
-        profitability_score += 1
-    if metrics["operating_margin"] > 0.15:  # Strong operating efficiency
-        profitability_score += 1
+    # For ETFs like GLD, focus on price momentum and market trends
+    if ticker in ["GLD", "IAU", "SGOL"]:  # Gold ETFs
+        prices_df = prices_to_df(data["prices"])
         
-    signals.append('bullish' if profitability_score >= 2 else 'bearish' if profitability_score == 0 else 'neutral')
-    reasoning["Profitability"] = {
-        "signal": signals[0],
-        "details": f"ROE: {metrics['return_on_equity']:.2%}, Net Margin: {metrics['net_margin']:.2%}, Op Margin: {metrics['operating_margin']:.2%}"
-    }
-    
-    # 2. Growth Analysis
-    growth_score = 0
-    if metrics["revenue_growth"] > 0.10:  # 10% revenue growth
-        growth_score += 1
-    if metrics["earnings_growth"] > 0.10:  # 10% earnings growth
-        growth_score += 1
-    if metrics["book_value_growth"] > 0.10:  # 10% book value growth
-        growth_score += 1
+        # Calculate moving averages
+        sma_50 = prices_df['close'].rolling(window=50).mean()
+        sma_200 = prices_df['close'].rolling(window=200).mean()
+        current_price = prices_df['close'].iloc[-1]
         
-    signals.append('bullish' if growth_score >= 2 else 'bearish' if growth_score == 0 else 'neutral')
-    reasoning["Growth"] = {
-        "signal": signals[1],
-        "details": f"Revenue Growth: {metrics['revenue_growth']:.2%}, Earnings Growth: {metrics['earnings_growth']:.2%}"
-    }
-    
-    # 3. Financial Health
-    health_score = 0
-    if metrics["current_ratio"] > 1.5:  # Strong liquidity
-        health_score += 1
-    if metrics["debt_to_equity"] < 0.5:  # Conservative debt levels
-        health_score += 1
-    if metrics["free_cash_flow_per_share"] > metrics["earnings_per_share"] * 0.8:  # Strong FCF conversion
-        health_score += 1
+        # Price above moving averages suggests bullish trend
+        if current_price > sma_50.iloc[-1] and current_price > sma_200.iloc[-1]:
+            signals.append("bullish")
+            reasoning["trend"] = "Price above both 50 and 200-day moving averages"
+        elif current_price < sma_50.iloc[-1] and current_price < sma_200.iloc[-1]:
+            signals.append("bearish")
+            reasoning["trend"] = "Price below both 50 and 200-day moving averages"
+        else:
+            signals.append("neutral")
+            reasoning["trend"] = "Mixed signals from moving averages"
         
-    signals.append('bullish' if health_score >= 2 else 'bearish' if health_score == 0 else 'neutral')
-    reasoning["Financial_Health"] = {
-        "signal": signals[2],
-        "details": f"Current Ratio: {metrics['current_ratio']:.2f}, D/E: {metrics['debt_to_equity']:.2f}"
-    }
-    
-    # 4. Valuation
-    pe_ratio = metrics["price_to_earnings_ratio"]
-    pb_ratio = metrics["price_to_book_ratio"]
-    ps_ratio = metrics["price_to_sales_ratio"]
-    
-    valuation_score = 0
-    if pe_ratio < 25:  # Reasonable P/E ratio
-        valuation_score += 1
-    if pb_ratio < 3:  # Reasonable P/B ratio
-        valuation_score += 1
-    if ps_ratio < 5:  # Reasonable P/S ratio
-        valuation_score += 1
+        # Volume analysis with lower threshold
+        avg_volume = prices_df['volume'].rolling(window=10).mean()
+        if prices_df['volume'].iloc[-1] > avg_volume.iloc[-1] * 1.2:
+            if current_price > prices_df['close'].iloc[-2]:
+                signals.append("bullish")
+                reasoning["volume"] = "Above-average volume on price increase"
+            else:
+                signals.append("bearish")
+                reasoning["volume"] = "Above-average volume on price decrease"
+        else:
+            signals.append("neutral")
+            reasoning["volume"] = "Normal trading volume"
         
-    signals.append('bullish' if valuation_score >= 2 else 'bearish' if valuation_score == 0 else 'neutral')
-    reasoning["Valuation"] = {
-        "signal": signals[3],
-        "details": f"P/E: {pe_ratio:.2f}, P/B: {pb_ratio:.2f}, P/S: {ps_ratio:.2f}"
-    }
+        # Price momentum with longer window
+        returns = prices_df['close'].pct_change()
+        momentum = returns.rolling(window=20).mean()
+        volatility = returns.rolling(window=20).std()
+        
+        # Adjust momentum threshold based on volatility
+        momentum_threshold = volatility.iloc[-1] * 0.5
+        
+        if momentum.iloc[-1] > momentum_threshold:
+            signals.append("bullish")
+            reasoning["momentum"] = f"Strong positive momentum: {momentum.iloc[-1]:.2%}"
+        elif momentum.iloc[-1] < -momentum_threshold:
+            signals.append("bearish")
+            reasoning["momentum"] = f"Strong negative momentum: {momentum.iloc[-1]:.2%}"
+        else:
+            signals.append("neutral")
+            reasoning["momentum"] = "Neutral momentum"
+            
+    else:  # For regular stocks
+        # Regular stock analysis (existing code)
+        if metrics.get("returnOnEquity") and metrics["returnOnEquity"] > 0.15:
+            signals.append("bullish")
+            reasoning["profitability"] = f"Strong ROE of {metrics['returnOnEquity']*100:.1f}%"
+        elif metrics.get("returnOnEquity") and metrics["returnOnEquity"] < 0.05:
+            signals.append("bearish")
+            reasoning["profitability"] = f"Weak ROE of {metrics['returnOnEquity']*100:.1f}%"
+        else:
+            signals.append("neutral")
+            reasoning["profitability"] = "Average profitability metrics"
+        
+        if metrics.get("forwardPE") and metrics["forwardPE"] < 15:
+            signals.append("bullish")
+            reasoning["valuation"] = f"Attractive Forward P/E of {metrics['forwardPE']:.1f}"
+        elif metrics.get("forwardPE") and metrics["forwardPE"] > 30:
+            signals.append("bearish")
+            reasoning["valuation"] = f"High Forward P/E of {metrics['forwardPE']:.1f}"
+        else:
+            signals.append("neutral")
+            reasoning["valuation"] = "Average valuation metrics"
+        
+        if metrics.get("debtToEquity") and metrics["debtToEquity"] < 0.5:
+            signals.append("bullish")
+            reasoning["financial_health"] = f"Low Debt/Equity ratio of {metrics['debtToEquity']:.2f}"
+        elif metrics.get("debtToEquity") and metrics["debtToEquity"] > 2:
+            signals.append("bearish")
+            reasoning["financial_health"] = f"High Debt/Equity ratio of {metrics['debtToEquity']:.2f}"
+        else:
+            signals.append("neutral")
+            reasoning["financial_health"] = "Average financial health metrics"
     
     # Determine overall signal
-    bullish_signals = signals.count('bullish')
-    bearish_signals = signals.count('bearish')
+    bullish_signals = signals.count("bullish")
+    bearish_signals = signals.count("bearish")
     
     if bullish_signals > bearish_signals:
-        overall_signal = 'bullish'
+        overall_signal = "bullish"
     elif bearish_signals > bullish_signals:
-        overall_signal = 'bearish'
+        overall_signal = "bearish"
     else:
-        overall_signal = 'neutral'
+        overall_signal = "neutral"
     
-    # Calculate confidence level
+    # Calculate confidence level based on the proportion of indicators agreeing
     total_signals = len(signals)
     confidence = max(bullish_signals, bearish_signals) / total_signals
     
+    # Generate the message content
     message_content = {
         "signal": overall_signal,
         "confidence": round(confidence, 2),
         "reasoning": reasoning
     }
-    
-    # Create the fundamental analysis message
+
+    # Create the fundamentals message
     message = HumanMessage(
         content=str(message_content),
         name="fundamentals_agent",
@@ -292,7 +316,7 @@ def fundamentals_agent(state: AgentState):
     
     # Print the reasoning if the flag is set
     if show_reasoning:
-        show_agent_reasoning(message_content, "Fundamental Analysis Agent")
+        show_agent_reasoning(message_content, "Fundamentals Agent")
     
     return {
         "messages": [message],

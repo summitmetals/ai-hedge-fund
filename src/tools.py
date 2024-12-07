@@ -1,66 +1,55 @@
 import os
-
+import yfinance as yf
 import pandas as pd
 import requests
-  
+
 def get_prices(ticker, start_date, end_date):
-    """Fetch price data from the API."""
-    headers = {"X-API-KEY": os.environ.get("FINANCIAL_DATASETS_API_KEY")}
-    url = (
-        f"https://api.financialdatasets.ai/prices/"
-        f"?ticker={ticker}"
-        f"&interval=day"
-        f"&interval_multiplier=1"
-        f"&start_date={start_date}"
-        f"&end_date={end_date}"
-    )
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        raise Exception(
-            f"Error fetching data: {response.status_code} - {response.text}"
-        )
-    data = response.json()
-    prices = data.get("prices")
-    if not prices:
-        raise ValueError("No price data returned")
-    return prices
+    """Fetch price data using yfinance."""
+    try:
+        ticker_data = yf.Ticker(ticker)
+        df = ticker_data.history(start=start_date, end=end_date)
+        if df.empty:
+            raise ValueError("No price data returned")
+        return df.reset_index().to_dict('records')
+    except Exception as e:
+        raise Exception(f"Error fetching data: {str(e)}")
 
 def prices_to_df(prices):
     """Convert prices to a DataFrame."""
     df = pd.DataFrame(prices)
-    df["Date"] = pd.to_datetime(df["time"])
+    df["Date"] = pd.to_datetime(df["Date"])
     df.set_index("Date", inplace=True)
+    df.columns = [col.lower() for col in df.columns]
     numeric_cols = ["open", "close", "high", "low", "volume"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df.sort_index(inplace=True)
     return df
 
-# Update the get_price_data function to use the new functions
 def get_price_data(ticker, start_date, end_date):
     prices = get_prices(ticker, start_date, end_date)
     return prices_to_df(prices)
 
 def get_financial_metrics(ticker, report_period, period='ttm', limit=1):
-    """Fetch financial metrics from the API."""
-    headers = {"X-API-KEY": os.environ.get("FINANCIAL_DATASETS_API_KEY")}
-    url = (
-        f"https://api.financialdatasets.ai/financial-metrics/"
-        f"?ticker={ticker}"
-        f"&report_period_lte={report_period}"
-        f"&limit={limit}"
-        f"&period={period}"
-    )
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        raise Exception(
-            f"Error fetching data: {response.status_code} - {response.text}"
-        )
-    data = response.json()
-    financial_metrics = data.get("financial_metrics")
-    if not financial_metrics:
-        raise ValueError("No financial metrics returned")
-    return financial_metrics
+    """Fetch financial metrics using yfinance."""
+    try:
+        ticker_data = yf.Ticker(ticker)
+        info = ticker_data.info
+        metrics = {
+            'marketCap': info.get('marketCap'),
+            'trailingPE': info.get('trailingPE'),
+            'forwardPE': info.get('forwardPE'),
+            'priceToBook': info.get('priceToBook'),
+            'profitMargins': info.get('profitMargins'),
+            'returnOnEquity': info.get('returnOnEquity'),
+            'returnOnAssets': info.get('returnOnAssets'),
+            'debtToEquity': info.get('debtToEquity'),
+            'currentRatio': info.get('currentRatio'),
+            'beta': info.get('beta')
+        }
+        return [metrics]  # Return as list to maintain compatibility with existing code
+    except Exception as e:
+        raise Exception(f"Error fetching financial metrics: {str(e)}")
 
 def calculate_confidence_level(signals):
     """Calculate confidence level based on the difference between SMAs."""
@@ -94,7 +83,6 @@ def calculate_bollinger_bands(prices_df, window=20):
     upper_band = sma + (std_dev * 2)
     lower_band = sma - (std_dev * 2)
     return upper_band, lower_band
-
 
 def calculate_obv(prices_df):
     obv = [0]
