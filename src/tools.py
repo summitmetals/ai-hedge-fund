@@ -4,15 +4,38 @@ import pandas as pd
 import requests
 
 def get_prices(ticker, start_date, end_date):
-    """Fetch price data using yfinance."""
+    """Fetch price data using yfinance with improved error handling."""
     try:
         ticker_data = yf.Ticker(ticker)
-        df = ticker_data.history(start=start_date, end=end_date)
-        if df.empty:
-            raise ValueError("No price data returned")
+        
+        # Try different intervals if data is missing
+        intervals = ['1d', '1wk']
+        df = None
+        
+        for interval in intervals:
+            df = ticker_data.history(start=start_date, end=end_date, interval=interval)
+            if not df.empty:
+                break
+        
+        if df is None or df.empty:
+            raise ValueError(f"No price data available for {ticker} between {start_date} and {end_date}")
+        
+        # Forward fill any missing values
+        df = df.ffill()
+        
+        # Ensure we have all required columns
+        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+        
+        # Convert weekly data to daily if needed
+        if interval == '1wk':
+            df = df.resample('D').ffill()
+        
         return df.reset_index().to_dict('records')
     except Exception as e:
-        raise Exception(f"Error fetching data: {str(e)}")
+        raise Exception(f"Error fetching data for {ticker}: {str(e)}")
 
 def prices_to_df(prices):
     """Convert prices to a DataFrame."""

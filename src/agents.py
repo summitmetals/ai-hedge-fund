@@ -83,92 +83,170 @@ def quant_agent(state: AgentState):
     # 2. RSI (Relative Strength Index)
     rsi = calculate_rsi(prices_df)
     
-    # 3. Bollinger Bands (Bollinger Bands)
+    # 3. Bollinger Bands
     upper_band, lower_band = calculate_bollinger_bands(prices_df)
     
     # 4. OBV (On-Balance Volume)
     obv = calculate_obv(prices_df)
     
+    # 5. Calculate trend strength
+    sma_20 = prices_df['close'].rolling(window=20).mean()
+    sma_50 = prices_df['close'].rolling(window=50).mean()
+    atr = prices_df['high'].rolling(window=14).max() - prices_df['low'].rolling(window=14).min()
+    
     # Generate individual signals
     signals = []
+    signal_weights = []  # Add weights to give more importance to stronger signals
     
-    # MACD signal
-    if len(macd_line) >= 2 and len(signal_line) >= 2:
-        if macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]:
+    # Trend Analysis
+    if len(sma_20) > 0 and len(sma_50) > 0:
+        trend_strength = (sma_20.iloc[-1] - sma_50.iloc[-1]) / atr.iloc[-1]
+        if trend_strength > 0.5:  # Strong uptrend
             signals.append('bullish')
-        elif macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]:
+            signal_weights.append(2.0)  # Higher weight for strong trend
+        elif trend_strength < -0.5:  # Strong downtrend
             signals.append('bearish')
+            signal_weights.append(2.0)
         else:
             signals.append('neutral')
-    else:
-        signals.append('neutral')  # Not enough data for MACD calculation
-    
-    # RSI signal
-    if rsi.iloc[-1] < 30:
-        signals.append('bullish')
-    elif rsi.iloc[-1] > 70:
-        signals.append('bearish')
+            signal_weights.append(1.0)
     else:
         signals.append('neutral')
+        signal_weights.append(1.0)
     
-    # Bollinger Bands signal
-    current_price = prices_df['close'].iloc[-1]
-    if current_price < lower_band.iloc[-1]:
-        signals.append('bullish')
-    elif current_price > upper_band.iloc[-1]:
-        signals.append('bearish')
+    # MACD signal - Enhanced to consider trend strength
+    if len(macd_line) >= 2 and len(signal_line) >= 2:
+        macd_trend = macd_line.diff().iloc[-5:].mean()  # Look at MACD momentum
+        if macd_line.iloc[-1] > signal_line.iloc[-1] and macd_trend > 0:
+            signals.append('bullish')
+            signal_weights.append(1.5 if abs(macd_trend) > macd_line.std() else 1.0)
+        elif macd_line.iloc[-1] < signal_line.iloc[-1] and macd_trend < 0:
+            signals.append('bearish')
+            signal_weights.append(1.5 if abs(macd_trend) > macd_line.std() else 1.0)
+        else:
+            signals.append('neutral')
+            signal_weights.append(1.0)
     else:
         signals.append('neutral')
+        signal_weights.append(1.0)
     
-    # OBV signal
-    obv_slope = obv.diff().iloc[-5:].mean()
-    if obv_slope > 0:
-        signals.append('bullish')
-    elif obv_slope < 0:
-        signals.append('bearish')
+    # RSI signal - More dynamic thresholds based on trend
+    rsi_value = rsi.iloc[-1] if len(rsi) > 0 else 50
+    if len(sma_20) > 0 and len(sma_50) > 0:
+        if sma_20.iloc[-1] > sma_50.iloc[-1]:  # Uptrend
+            if rsi_value < 40:  # More aggressive in uptrend
+                signals.append('bullish')
+                signal_weights.append(1.5)
+            elif rsi_value > 80:
+                signals.append('bearish')
+                signal_weights.append(1.0)
+            else:
+                signals.append('neutral')
+                signal_weights.append(1.0)
+        else:  # Downtrend
+            if rsi_value < 20:
+                signals.append('bullish')
+                signal_weights.append(1.0)
+            elif rsi_value > 60:  # More aggressive in downtrend
+                signals.append('bearish')
+                signal_weights.append(1.5)
+            else:
+                signals.append('neutral')
+                signal_weights.append(1.0)
     else:
         signals.append('neutral')
+        signal_weights.append(1.0)
+    
+    # Bollinger Bands signal - Consider trend context
+    if len(upper_band) > 0 and len(lower_band) > 0:
+        current_price = prices_df['close'].iloc[-1]
+        bb_width = (upper_band.iloc[-1] - lower_band.iloc[-1]) / prices_df['close'].rolling(window=20).mean().iloc[-1]
+        
+        if current_price < lower_band.iloc[-1] and bb_width > 0.05:  # Wide bands = stronger signal
+            signals.append('bullish')
+            signal_weights.append(1.5)
+        elif current_price > upper_band.iloc[-1] and bb_width > 0.05:
+            signals.append('bearish')
+            signal_weights.append(1.5)
+        else:
+            # Look for price moves within bands
+            price_position = (current_price - lower_band.iloc[-1]) / (upper_band.iloc[-1] - lower_band.iloc[-1])
+            if price_position < 0.2:  # Close to lower band
+                signals.append('bullish')
+                signal_weights.append(1.0)
+            elif price_position > 0.8:  # Close to upper band
+                signals.append('bearish')
+                signal_weights.append(1.0)
+            else:
+                signals.append('neutral')
+                signal_weights.append(1.0)
+    else:
+        signals.append('neutral')
+        signal_weights.append(1.0)
+    
+    # OBV signal - Enhanced with volume trend
+    if len(obv) >= 5:
+        obv_slope = obv.diff().iloc[-5:].mean()
+        obv_std = obv.diff().iloc[-20:].std()
+        
+        if obv_slope > obv_std:  # Strong volume trend up
+            signals.append('bullish')
+            signal_weights.append(1.5)
+        elif obv_slope < -obv_std:  # Strong volume trend down
+            signals.append('bearish')
+            signal_weights.append(1.5)
+        else:
+            signals.append('neutral')
+            signal_weights.append(1.0)
+    else:
+        signals.append('neutral')
+        signal_weights.append(1.0)
+    
+    # Weighted signal calculation
+    bullish_score = sum(w for s, w in zip(signals, signal_weights) if s == 'bullish')
+    bearish_score = sum(w for s, w in zip(signals, signal_weights) if s == 'bearish')
+    total_weight = sum(signal_weights)
+    
+    if bullish_score > bearish_score:
+        overall_signal = 'bullish'
+        confidence = bullish_score / total_weight
+    elif bearish_score > bullish_score:
+        overall_signal = 'bearish'
+        confidence = bearish_score / total_weight
+    else:
+        overall_signal = 'neutral'
+        confidence = 0.5
     
     # Add reasoning collection
     reasoning = {
-        "MACD": {
+        "Trend": {
             "signal": signals[0],
-            "details": f"MACD Line crossed {'above' if signals[0] == 'bullish' else 'below' if signals[0] == 'bearish' else 'neither above nor below'} Signal Line"
+            "details": f"Trend strength: {trend_strength:.2f}"
+        },
+        "MACD": {
+            "signal": signals[1],
+            "details": f"MACD Line crossed {'above' if signals[1] == 'bullish' else 'below' if signals[1] == 'bearish' else 'neither above nor below'} Signal Line"
         },
         "RSI": {
-            "signal": signals[1],
-            "details": f"RSI is {rsi.iloc[-1]:.2f} ({'oversold' if signals[1] == 'bullish' else 'overbought' if signals[1] == 'bearish' else 'neutral'})"
+            "signal": signals[2],
+            "details": f"RSI is {rsi_value:.2f} ({'oversold' if signals[2] == 'bullish' else 'overbought' if signals[2] == 'bearish' else 'neutral'})"
         },
         "Bollinger": {
-            "signal": signals[2],
-            "details": f"Price is {'below lower band' if signals[2] == 'bullish' else 'above upper band' if signals[2] == 'bearish' else 'within bands'}"
+            "signal": signals[3],
+            "details": f"Price is {'below lower band' if signals[3] == 'bullish' else 'above upper band' if signals[3] == 'bearish' else 'within bands'}"
         },
         "OBV": {
-            "signal": signals[3],
-            "details": f"OBV slope is {obv_slope:.2f} ({signals[3]})"
+            "signal": signals[4],
+            "details": f"OBV slope is {obv_slope:.2f} ({signals[4]})"
         }
     }
-    
-    # Determine overall signal
-    bullish_signals = signals.count('bullish')
-    bearish_signals = signals.count('bearish')
-    
-    if bullish_signals > bearish_signals:
-        overall_signal = 'bullish'
-    elif bearish_signals > bullish_signals:
-        overall_signal = 'bearish'
-    else:
-        overall_signal = 'neutral'
-    
-    # Calculate confidence level based on the proportion of indicators agreeing
-    total_signals = len(signals)
-    confidence = max(bullish_signals, bearish_signals) / total_signals
     
     # Generate the message content
     message_content = {
         "signal": overall_signal,
         "confidence": round(confidence, 2),
         "reasoning": {
+            "Trend": reasoning["Trend"],
             "MACD": reasoning["MACD"],
             "RSI": reasoning["RSI"],
             "Bollinger": reasoning["Bollinger"],
@@ -328,67 +406,99 @@ def risk_management_agent(state: AgentState):
     """Evaluates portfolio risk and sets position limits"""
     show_reasoning = state["metadata"]["show_reasoning"]
     portfolio = state["data"]["portfolio"]
+    prices = state["data"]["prices"]
+    prices_df = prices_to_df(prices)
+    
+    # Calculate volatility and trend metrics
+    returns = prices_df['close'].pct_change()
+    volatility = returns.std() * (252 ** 0.5)  # Annualized volatility
+    
+    # Calculate trend strength
+    sma_20 = prices_df['close'].rolling(window=20).mean()
+    sma_50 = prices_df['close'].rolling(window=50).mean()
+    atr = prices_df['high'].rolling(window=14).max() - prices_df['low'].rolling(window=14).min()
+    
+    if len(sma_20) > 0 and len(sma_50) > 0 and len(atr) > 0:
+        trend_strength = abs((sma_20.iloc[-1] - sma_50.iloc[-1]) / atr.iloc[-1])
+    else:
+        trend_strength = 0
     
     # Find the quant message by looking for the message with name "quant_agent"
     quant_message = next(msg for msg in state["messages"] if msg.name == "quant_agent")
     fundamentals_message = next(msg for msg in state["messages"] if msg.name == "fundamentals_agent")
-
-    # Create the prompt template
-    template = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                """You are a risk management specialist.
-                Your job is to take a look at the trading analysis and
-                evaluate portfolio exposure and recommend position sizing.
-                Provide the following in your output (as a JSON):
-                "max_position_size": <float greater than 0>,
-                "risk_score": <integer between 1 and 10>,
-                "trading_action": <buy | sell | hold>,
-                "reasoning": <concise explanation of the decision>
-                """
-            ),
-            (
-                "human",
-                """Based on the trading analysis below, provide your risk assessment.
-
-                Quant Analysis Trading Signal: {quant_message}
-                Fundamental Analysis Trading Signal: {fundamentals_message}
-
-                Here is the current portfolio:
-                Portfolio:
-                Cash: {portfolio_cash}
-                Current Position: {portfolio_stock} shares
-                
-                Only include the max position size, risk score, trading action, and reasoning in your JSON output.  Do not include any JSON markdown.
-                """
-            ),
-        ]
-    )
-
-    # Generate the prompt
-    prompt = template.invoke(
-        {
-            "quant_message": quant_message.content,
-            "fundamentals_message": fundamentals_message.content,
-            "portfolio_cash": f"{portfolio['cash']:.2f}",
-            "portfolio_stock": portfolio["stock"]
-        }
-    )
-
-    # Invoke the LLM
-    result = llm.invoke(prompt)
+    
+    # Extract confidence levels from messages
+    quant_data = eval(quant_message.content)
+    fundamentals_data = eval(fundamentals_message.content)
+    
+    quant_confidence = quant_data.get('confidence', 0.5)
+    fundamentals_confidence = fundamentals_data.get('confidence', 0.5)
+    
+    # Calculate base position size based on portfolio value
+    total_value = portfolio['cash'] + (portfolio['stock'] * prices_df['close'].iloc[-1])
+    
+    # Adjust position size based on volatility
+    vol_factor = max(0.2, min(1.0, 0.3 / volatility))  # Reduce position size when volatility is high
+    
+    # Adjust position size based on trend strength
+    trend_factor = min(1.5, 1.0 + trend_strength)  # Increase position size in strong trends
+    
+    # Adjust position size based on signal confidence
+    confidence_factor = (quant_confidence + fundamentals_confidence) / 2
+    
+    # Calculate final position size
+    base_position = 0.5  # Start with 50% of portfolio
+    max_position_size = base_position * vol_factor * trend_factor * confidence_factor
+    max_position_size = min(0.95, max_position_size)  # Cap at 95% of portfolio
+    
+    # Calculate risk score (1-10)
+    risk_factors = [
+        volatility * 10,  # Higher volatility = higher risk
+        (1 - vol_factor) * 5,  # Lower vol_factor = higher risk
+        (trend_factor - 1) * 3,  # Stronger trend = slightly higher risk
+        (1 - confidence_factor) * 2  # Lower confidence = higher risk
+    ]
+    risk_score = min(10, max(1, sum(risk_factors) / len(risk_factors) * 10))
+    
+    # Determine trading action based on signals and current position
+    quant_signal = quant_data.get('signal', 'neutral')
+    fundamentals_signal = fundamentals_data.get('signal', 'neutral')
+    
+    if quant_signal == fundamentals_signal:
+        trading_action = quant_signal
+    elif quant_confidence > fundamentals_confidence:
+        trading_action = quant_signal
+    else:
+        trading_action = fundamentals_signal
+    
+    # Convert trading_action to buy/sell/hold
+    if trading_action == 'bullish':
+        trading_action = 'buy'
+    elif trading_action == 'bearish':
+        trading_action = 'sell'
+    else:
+        trading_action = 'hold'
+    
+    # Create the message content
+    message_content = {
+        "max_position_size": round(max_position_size, 2),
+        "risk_score": round(risk_score, 1),
+        "trading_action": trading_action,
+        "reasoning": f"Position size adjusted for volatility ({vol_factor:.2f}), "
+                    f"trend strength ({trend_factor:.2f}), and "
+                    f"signal confidence ({confidence_factor:.2f})"
+    }
+    
     message = HumanMessage(
-        content=result.content,
+        content=str(message_content),
         name="risk_management_agent",
     )
-
+    
     # Print the decision if the flag is set
     if show_reasoning:
         show_agent_reasoning(message.content, "Risk Management Agent")
-
+    
     return {"messages": state["messages"] + [message]}
-
 
 ##### Portfolio Management Agent #####
 def portfolio_management_agent(state: AgentState):
